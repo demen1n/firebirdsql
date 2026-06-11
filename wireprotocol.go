@@ -897,9 +897,27 @@ func (p *wireProtocol) getBlobSegments(blobId []byte, transHandle int32) ([]byte
 	for more_data != 2 {
 		p.opGetSegment(blobHandle)
 		more_data, _, rbuf, err = p.opResponse()
+		if err != nil {
+			// A read error here used to leave more_data != 2 and spin the loop
+			// forever against a broken connection. Surface it instead.
+			p.opCloseBlob(blobHandle) // best-effort
+			if (p.acceptType & ptype_MASK) != ptype_lazy_send {
+				p.opResponse() // drain the close response, ignore its result
+			}
+			p.resumeBuffer(suspendBuf)
+			return nil, err
+		}
 		buf := rbuf
-		for len(buf) > 0 {
+		for len(buf) >= 2 {
 			ln := int(bytes_to_int16(buf[0:2]))
+			if ln < 0 || ln+2 > len(buf) {
+				p.opCloseBlob(blobHandle) // best-effort
+				if (p.acceptType & ptype_MASK) != ptype_lazy_send {
+					p.opResponse()
+				}
+				p.resumeBuffer(suspendBuf)
+				return nil, fmt.Errorf("firebirdsql: malformed blob segment (len=%d, have=%d)", ln, len(buf))
+			}
 			blob = append(blob, buf[2:ln+2]...)
 			buf = buf[ln+2:]
 		}
