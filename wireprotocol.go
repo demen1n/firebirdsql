@@ -1234,7 +1234,11 @@ func (p *wireProtocol) opExecute(stmt *firebirdsqlStmt, params []driver.Value, i
 		p.packInt(0)
 		p.packInt(0)
 	} else {
-		blr, values := p.paramsToBlr(transHandle, params, p.protocolVersion, inputXsqlda)
+		blr, values, err := p.paramsToBlr(transHandle, params, p.protocolVersion, inputXsqlda)
+		if err != nil {
+			p.buf = p.buf[:0] // discard the half-built op_execute packet
+			return err
+		}
 		p.packBytes(blr)
 		p.packInt(0)
 		p.packInt(1)
@@ -1261,7 +1265,11 @@ func (p *wireProtocol) opExecute2(stmt *firebirdsqlStmt, params []driver.Value, 
 		p.packInt(0)
 		p.packInt(0)
 	} else {
-		blr, values := p.paramsToBlr(transHandle, params, p.protocolVersion, inputXsqlda)
+		blr, values, err := p.paramsToBlr(transHandle, params, p.protocolVersion, inputXsqlda)
+		if err != nil {
+			p.buf = p.buf[:0] // discard the half-built op_execute2 packet
+			return err
+		}
 		p.packBytes(blr)
 		p.packInt(0)
 		p.packInt(1)
@@ -1618,8 +1626,9 @@ func (p *wireProtocol) createBlob(value []byte, transHandle int32) ([]byte, erro
 // inputXsqlda contains the server-reported types for bind parameters (from isc_info_sql_bind).
 // It is used to select the correct encoding for time.Time values: TIMESTAMP/TIME (without TZ)
 // columns are encoded as local wall clock time to preserve round-trip correctness when time.Local != UTC.
-func (p *wireProtocol) paramsToBlr(transHandle int32, params []driver.Value, protocolVersion int32, inputXsqlda []xSQLVAR) ([]byte, []byte) {
+func (p *wireProtocol) paramsToBlr(transHandle int32, params []driver.Value, protocolVersion int32, inputXsqlda []xSQLVAR) ([]byte, []byte, error) {
 	var v, blr []byte
+	var err error
 
 	ln := len(params) * 2
 	// Each param contributes a type descriptor + null indicator pair, plus a header and terminator entry.
@@ -1650,7 +1659,9 @@ func (p *wireProtocol) paramsToBlr(transHandle int32, params []driver.Value, pro
 			if len(b) < MAX_CHAR_LENGTH {
 				blr, v = _bytesToBlr(b)
 			} else {
-				v, _ = p.createBlob(b, transHandle)
+				if v, err = p.createBlob(b, transHandle); err != nil {
+					return nil, nil, err
+				}
 				blr = []byte{9, 0}
 			}
 		case int:
@@ -1701,7 +1712,9 @@ func (p *wireProtocol) paramsToBlr(transHandle int32, params []driver.Value, pro
 			if len(f) < MAX_CHAR_LENGTH {
 				blr, v = _bytesToBlr(f)
 			} else {
-				v, _ = p.createBlob(f, transHandle)
+				if v, err = p.createBlob(f, transHandle); err != nil {
+					return nil, nil, err
+				}
 				blr = []byte{9, 0}
 			}
 		default:
@@ -1710,7 +1723,9 @@ func (p *wireProtocol) paramsToBlr(transHandle int32, params []driver.Value, pro
 			if len(b) < MAX_CHAR_LENGTH {
 				blr, v = _bytesToBlr(b)
 			} else {
-				v, _ = p.createBlob(b, transHandle)
+				if v, err = p.createBlob(b, transHandle); err != nil {
+					return nil, nil, err
+				}
 				blr = []byte{9, 0}
 			}
 		}
@@ -1730,7 +1745,7 @@ func (p *wireProtocol) paramsToBlr(transHandle int32, params []driver.Value, pro
 	blr = bytes.Join(blrList, nil)
 	v = bytes.Join(valuesList, nil)
 
-	return blr, v
+	return blr, v, nil
 }
 
 func (p *wireProtocol) debugPrint(s string, a ...interface{}) {

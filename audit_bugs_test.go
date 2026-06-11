@@ -26,8 +26,10 @@ package firebirdsql
 import (
 	"bytes"
 	"database/sql"
+	"database/sql/driver"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -169,8 +171,37 @@ func TestAuditBug1_GetBlobSegmentsLoopsOnReadError(t *testing.T) {
 }
 
 // ===========================================================================
-// Integration test (requires a live Firebird server, like driver_test.go).
-// Guards the happy path around bug #1.
+// Bug #2: paramsToBlr discards createBlob errors (wireprotocol.go:1635/1686/1695
+// "v, _ = p.createBlob(...)"). A failed BLOB write is silently turned into a
+// bogus blobId and the statement proceeds, risking data corruption.
+//
+// We drive opExecute with a large []byte param (forces the createBlob path) and
+// script the create-blob response to be a server error. opExecute must surface
+// that error; today it returns nil.
+// ===========================================================================
+
+func TestAuditBug2_CreateBlobErrorIsSwallowed(t *testing.T) {
+	// One scripted read: the op_create_blob2 response is a Firebird error.
+	p, _ := newScriptedWireProtocol(t, errorResponse(335544321), 0)
+
+	fc := &firebirdsqlConn{wp: p}
+	fc.tx = &firebirdsqlTx{fc: fc, transHandle: 1}
+	stmt := &firebirdsqlStmt{fc: fc, stmtHandle: 1}
+
+	// > MAX_CHAR_LENGTH so paramsToBlr routes the value through createBlob.
+	bigParam := bytes.Repeat([]byte("x"), MAX_CHAR_LENGTH+10)
+
+	err := p.opExecute(stmt, []driver.Value{bigParam}, nil)
+	require.Error(t, err,
+		"BUG #2: opExecute must propagate the createBlob failure instead of swallowing it")
+
+	var fbErr *FbError
+	require.ErrorAs(t, err, &fbErr, "the surfaced error should be the server FbError from createBlob")
+}
+
+// ===========================================================================
+// Integration tests (require a live Firebird server, like driver_test.go).
+// They guard the happy paths around bugs #1 and #2.
 // ===========================================================================
 
 // Bug #1 happy path: a large, multi-segment binary BLOB must round-trip with
@@ -199,4 +230,28 @@ func TestAuditBug1_Integration_MultiSegmentBlobRoundtrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len(want), len(got), "blob length mismatch")
 	require.True(t, bytes.Equal(want, got), "blob content mismatch after round-trip")
+}
+
+// Bug #2 happy path: a string parameter larger than MAX_CHAR_LENGTH is written
+// via createBlob; it must round-trip intact (and, with #2 fixed, any write
+// failure on this path would surface as an error rather than silent corruption).
+func TestAuditBug2_Integration_LargeStringParamRoundtrip(t *testing.T) {
+	test_dsn := GetTestDSN("test_audit_bug2_")
+	conn, err := sql.Open("firebirdsql_createdb", test_dsn)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	_, err = conn.Exec("CREATE TABLE audit_blob2 (id INTEGER, txt BLOB SUB_TYPE TEXT)")
+	require.NoError(t, err)
+
+	want := strings.Repeat("The quick brown fox. ", (MAX_CHAR_LENGTH/21)+200) // > MAX_CHAR_LENGTH
+	require.Greater(t, len(want), MAX_CHAR_LENGTH)
+
+	_, err = conn.Exec("INSERT INTO audit_blob2 (id, txt) VALUES (1, ?)", want)
+	require.NoError(t, err)
+
+	var got string
+	err = conn.QueryRow("SELECT txt FROM audit_blob2 WHERE id = 1").Scan(&got)
+	require.NoError(t, err)
+	require.Equal(t, want, got, "text blob content mismatch after round-trip")
 }
