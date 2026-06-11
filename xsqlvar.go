@@ -201,10 +201,26 @@ func (x *xSQLVAR) scantype() reflect.Type {
 	return reflect.TypeOf(nil)
 }
 
+// resolveLocation loads a named IANA zone, falling back to UTC when the name is
+// empty, unknown, or unavailable (e.g. a host without a tz database). It never
+// returns nil, so callers can hand the result straight to time.Date/In without
+// risking a "missing Location" panic.
+func resolveLocation(timezone string) *time.Location {
+	if timezone == "" {
+		return time.Local
+	}
+	if loc, err := time.LoadLocation(timezone); err == nil && loc != nil {
+		return loc
+	}
+	return time.UTC
+}
+
 func (x *xSQLVAR) _parseTimezone(raw_value []byte) *time.Location {
 	timezone := getTimezoneNameByID(int(bytes_to_buint16(raw_value)))
-	tz, _ := time.LoadLocation(timezone)
-	return tz
+	if loc, err := time.LoadLocation(timezone); err == nil && loc != nil {
+		return loc
+	}
+	return time.UTC
 }
 
 func (x *xSQLVAR) _parseDate(raw_value []byte) (int, int, int) {
@@ -241,19 +257,13 @@ func (x *xSQLVAR) _parseTime(raw_value []byte) (int, int, int, int) {
 }
 
 func (x *xSQLVAR) parseDate(raw_value []byte, timezone string) time.Time {
-	tz := time.Local
-	if timezone != "" {
-		tz, _ = time.LoadLocation(timezone)
-	}
+	tz := resolveLocation(timezone)
 	year, month, day := x._parseDate(raw_value)
 	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, tz)
 }
 
 func (x *xSQLVAR) parseTime(raw_value []byte, timezone string) time.Time {
-	tz := time.Local
-	if timezone != "" {
-		tz, _ = time.LoadLocation(timezone)
-	}
+	tz := resolveLocation(timezone)
 	h, m, s, n := x._parseTime(raw_value)
 	now := time.Now()
 	zone, offset := time.Date(now.Year(), now.Month(), now.Day(), h, m, s, n, tz).Zone()
@@ -261,10 +271,7 @@ func (x *xSQLVAR) parseTime(raw_value []byte, timezone string) time.Time {
 }
 
 func (x *xSQLVAR) parseTimestamp(raw_value []byte, timezone string) time.Time {
-	tz := time.Local
-	if timezone != "" {
-		tz, _ = time.LoadLocation(timezone)
-	}
+	tz := resolveLocation(timezone)
 
 	year, month, day := x._parseDate(raw_value[:4])
 	h, m, s, n := x._parseTime(raw_value[4:8])
@@ -276,7 +283,7 @@ func (x *xSQLVAR) parseTimeTz(raw_value []byte) time.Time {
 	var tz, loc *time.Location
 	timezone_id := bytes_to_buint16(raw_value[4:6])
 	if timezone_id == 0 {
-		tz, _ = time.LoadLocation("GMT")
+		tz = resolveLocation("GMT")
 		loc = tz
 	} else {
 		tz = x._parseTimezone(raw_value[4:6])
@@ -293,7 +300,7 @@ func (x *xSQLVAR) parseTimestampTz(raw_value []byte) time.Time {
 	h, m, s, n := x._parseTime(raw_value[4:8])
 	timezone_id := bytes_to_buint16(raw_value[8:10])
 	if timezone_id == 0 {
-		tz, _ := time.LoadLocation("GMT")
+		tz := resolveLocation("GMT")
 		return time.Date(year, time.Month(month), day, h, m, s, n, tz)
 	}
 	tz := x._parseTimezone(raw_value[8:10])

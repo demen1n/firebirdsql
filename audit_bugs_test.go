@@ -200,6 +200,40 @@ func TestAuditBug2_CreateBlobErrorIsSwallowed(t *testing.T) {
 }
 
 // ===========================================================================
+// Bug #3: invalid / unavailable IANA timezone -> nil *time.Location -> panic.
+// xsqlvar.go parse{Date,Time,Timestamp} ignore the LoadLocation error and pass
+// nil to time.Date(), which panics ("missing Location"). Reproduces both on a
+// typo'd ?timezone= value and on hosts without a tz database.
+// ===========================================================================
+
+func TestAuditBug3_InvalidTimezoneDoesNotPanic(t *testing.T) {
+	const badTZ = "Definitely/NotARealZone"
+
+	xDate := &xSQLVAR{sqltype: SQL_TYPE_DATE}
+	rawDate := _convert_date(time.Date(2020, 3, 15, 0, 0, 0, 0, time.UTC))
+	require.NotPanics(t, func() { _ = xDate.parseDate(rawDate, badTZ) },
+		"BUG #3: parseDate panics on an unresolvable timezone (nil *time.Location)")
+
+	xTime := &xSQLVAR{sqltype: SQL_TYPE_TIME}
+	rawTime := _convert_time(time.Date(2020, 3, 15, 10, 11, 12, 0, time.UTC))
+	require.NotPanics(t, func() { _ = xTime.parseTime(rawTime, badTZ) },
+		"BUG #3: parseTime panics on an unresolvable timezone")
+
+	xTs := &xSQLVAR{sqltype: SQL_TYPE_TIMESTAMP}
+	rawTs := _convert_timestamp(time.Date(2020, 3, 15, 10, 11, 12, 0, time.UTC))
+	require.NotPanics(t, func() { _ = xTs.parseTimestamp(rawTs, badTZ) },
+		"BUG #3: parseTimestamp panics on an unresolvable timezone")
+}
+
+// Secondary aspect of #3: parseDSN should reject an invalid timezone up front
+// (fail-fast) rather than deferring a panic to the first temporal read.
+func TestAuditBug3_DSNRejectsInvalidTimezone(t *testing.T) {
+	_, err := parseDSN("sysdba:masterkey@localhost/var/lib/firebird/db.fdb?timezone=Definitely/NotARealZone")
+	require.Error(t, err,
+		"BUG #3: parseDSN should validate ?timezone= and fail fast on an unknown zone")
+}
+
+// ===========================================================================
 // Integration tests (require a live Firebird server, like driver_test.go).
 // They guard the happy paths around bugs #1 and #2.
 // ===========================================================================

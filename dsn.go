@@ -25,8 +25,10 @@ package firebirdsql
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type firebirdDsn struct {
@@ -93,6 +95,14 @@ func parseDSN(dsns string) (*firebirdDsn, error) {
 			dsn.options[k] = values[0]
 		} else {
 			dsn.options[k] = v
+		}
+	}
+
+	// Fail fast on an unknown/unavailable timezone instead of deferring a panic
+	// to the first DATE/TIME/TIMESTAMP read.
+	if tz := dsn.options["timezone"]; tz != "" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			return nil, fmt.Errorf("firebirdsql: invalid timezone %q: %w", tz, err)
 		}
 	}
 
