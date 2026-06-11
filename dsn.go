@@ -66,12 +66,17 @@ func parseDSN(dsns string) (*firebirdDsn, error) {
 		dsn.addr += ":3050"
 	}
 	dsn.dbName = u.Path
+	// u.Path is "" (no path) or "/" (root slash only) when no database was
+	// given; both used to panic on the slice indexing below.
+	if len(dsn.dbName) < 2 {
+		return nil, errors.New("firebirdsql: database path is required")
+	}
 	if !strings.ContainsRune(dsn.dbName[1:], '/') {
 		dsn.dbName = dsn.dbName[1:]
 	}
 
 	//Windows Path
-	if strings.ContainsRune(dsn.dbName[2:], ':') {
+	if len(dsn.dbName) >= 2 && strings.ContainsRune(dsn.dbName[2:], ':') {
 		dsn.dbName = dsn.dbName[1:]
 	}
 

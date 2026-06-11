@@ -234,6 +234,29 @@ func TestAuditBug3_DSNRejectsInvalidTimezone(t *testing.T) {
 }
 
 // ===========================================================================
+// Bug #4: parseDSN panics ("slice bounds out of range") on a missing/short
+// database path. dsn.go:67/72 index dsn.dbName[1:] and [2:] without a length
+// guard. Should return a clear error instead.
+// ===========================================================================
+
+func TestAuditBug4_ParseDSNShortPathDoesNotPanic(t *testing.T) {
+	cases := []string{
+		"sysdba:masterkey@localhost",      // no path at all
+		"sysdba:masterkey@localhost:3050", // no path, explicit port
+		"sysdba:masterkey@localhost/",     // root slash only
+	}
+	for _, dsn := range cases {
+		t.Run(dsn, func(t *testing.T) {
+			require.NotPanics(t, func() {
+				if _, err := parseDSN(dsn); err == nil {
+					t.Errorf("BUG #4: parseDSN(%q) should return an error for a missing database path", dsn)
+				}
+			}, "BUG #4: parseDSN(%q) panics on a missing/short database path", dsn)
+		})
+	}
+}
+
+// ===========================================================================
 // Integration tests (require a live Firebird server, like driver_test.go).
 // They guard the happy paths around bugs #1 and #2.
 // ===========================================================================
